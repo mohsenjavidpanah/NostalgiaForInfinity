@@ -55,15 +55,27 @@ class ProcessResult:
 
 
 class Backtest:
-    def __init__(self, request, exchange):
+    def __init__(self, request, exchange=None):
         self.request = request
         self.exchange = exchange
 
     def __call__(
-        self, start_date, end_date, pairlist=None, max_open_trades=5, stake_amount="unlimited"
+        self,
+        start_date,
+        end_date,
+        pairlist=None,
+        max_open_trades=5,
+        stake_amount="unlimited",
+        exchange=None,
     ):
+        if exchange is None:
+            exchange = self.exchange
+        if exchange is None:
+            raise RuntimeError(
+                f"No 'exchange' was passed when instantiating {self.__class__.__name__} or when calling it"
+            )
         tmp_path = self.request.getfixturevalue("tmp_path")
-        exchange_config = f"user_data/data/{self.exchange}-usdt-static.json"
+        exchange_config = f"user_data/data/{exchange}-usdt-static.json"
         json_results_file = tmp_path / "backtest-results.json"
         cmdline = [
             "freqtrade",
@@ -74,15 +86,15 @@ class Backtest:
             f"--max-open-trades={max_open_trades}",
             f"--stake-amount={stake_amount}",
             "--config=user_data/data/pairlists.json",
-            f"--export-filename={json_results_file}",
         ]
         if pairlist is None:
             cmdline.append(f"--config={exchange_config}")
         else:
-            pairlist_config = {"exchange": {"name": self.exchange, "pair_whitelist": pairlist}}
+            pairlist_config = {"exchange": {"name": exchange, "pair_whitelist": pairlist}}
             pairlist_config_file = tmp_path / "test-pairlist.json"
             pairlist_config_file.write(json.dumps(pairlist_config))
             cmdline.append(f"--config={pairlist_config_file}")
+        cmdline.append(f"--export-filename={json_results_file}")
         log.info("Running cmdline '%s' on '%s'", " ".join(cmdline), REPO_ROOT)
         proc = subprocess.run(
             cmdline, check=False, shell=False, cwd=REPO_ROOT, text=True, capture_output=True
@@ -107,16 +119,38 @@ class Backtest:
             generated_txt_results_artifact_path.write_text(ret.stdout.strip())
 
         results_data = json.loads(generated_results_file.read_text())
+        full_stats_data = results_data["strategy_comparison"][0]
+        full_results_data = results_data["strategy"]["NostalgiaForInfinityNext"]
         data = {
             "stdout": ret.stdout.strip(),
             "stderr": ret.stderr.strip(),
-            "results": results_data["strategy"]["NostalgiaForInfinityNext"],
-            "stats": results_data["strategy_comparison"][0],
+            "results": full_results_data,
+            "full_stats": full_stats_data,
+            "stats_pct": {
+                "max_drawdown": full_results_data["max_drawdown"] * 100,
+                "winrate": round(full_stats_data["wins"] * 100.0 / full_stats_data["trades"], 2),
+            },
         }
         # At some point, consider logging at the debug level or removing this log call
         # which is only here to understand the JSON results data structure.
+        log_data = {}
+        for key in ("results", "full_stats", "stats_pct"):
+            log_data[key] = data[key]
         log.info(
             "Backtest results:\n%s",
-            pprint.pformat({"results": data["results"], "stats": data["stats"]}),
+            pprint.pformat(log_data),
         )
         return json.loads(json.dumps(data), object_hook=lambda d: SimpleNamespace(**d))
+
+
+@attr.s(frozen=True)
+class Timerange:
+    start_date = attr.ib()
+    end_date = attr.ib()
+
+
+@attr.s(frozen=True)
+class Exchange:
+    name = attr.ib()
+    winrate = attr.ib()
+    max_drawdown = attr.ib()
